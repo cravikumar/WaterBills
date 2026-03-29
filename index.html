@@ -1,203 +1,125 @@
 <!DOCTYPE html><html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Water Bill Reconciliation</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<style>
-body{font-family:Arial, sans-serif; padding:12px}
-table{border-collapse:collapse; width:100%; margin-top:10px}
-th,td{border:1px solid #ccc; padding:6px; text-align:center}
-th{background:#eee; cursor:pointer}
-.paid{background:#c8e6c9}
-.pending{background:#f5f5f5}
-button{padding:4px 8px}
-</style>
+  <meta charset="UTF-8" />
+  <title>Water Bill Reconciler</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h2 { margin-top: 30px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid #ccc; padding: 6px; text-align: left; }
+    th { background: #f0f0f0; }
+    .paid { background: #d4edda; }
+    .unpaid { background: #f8d7da; }
+    button { padding: 4px 8px; }
+  </style>
 </head>
 <body>
-<h2>Water Bill Reconciliation</h2><label>Water Bill PDF:</label><br> <input type="file" id="billPdf" accept="application/pdf"><br><br>
+  <h1>Water Bill Reconciliation</h1><label>Bills PDF: <input type="file" id="billsFile" accept="application/pdf" /></label><br/><br/> <label>Bank PDF: <input type="file" id="bankFile" accept="application/pdf" /></label><br/><br/>
 
-<label>Bank Statement PDF:</label><br> <input type="file" id="bankPdf" accept="application/pdf"><br><br>
+<button onclick="reconcile()">Reconcile Data</button>
 
-<button onclick="startReconcile()">Reconcile Data</button>
+  <h2>Bill vs Payment</h2>
+  <table id="billTable">
+    <thead>
+      <tr><th>Flat</th><th>Bill</th><th>Paid</th><th>Status</th><th>Override</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>  <h2>Unmatched Bank Transactions</h2>
+  <table id="unmatchedTable">
+    <thead>
+      <tr><th>Date</th><th>Amount</th><th>Description</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table><script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-<h3>Bill vs Payment</h3>
-<table id="resultTable">
-<thead>
-<tr>
-<th onclick="sortTable(0)">Flat</th>
-<th onclick="sortTable(1)">Bill</th>
-<th onclick="sortTable(2)">Payment</th>
-<th onclick="sortTable(3)">Status</th>
-<th>Override</th>
-</tr>
-</thead>
-<tbody></tbody>
-</table><h3>Unmatched Bank Transactions</h3>
-<table id="unmatchedTable">
-<thead>
-<tr><th onclick="sortUnmatched(0)">Amount</th><th onclick="sortUnmatched(1)">Description</th></tr>
-</thead>
-<tbody></tbody>
-</table><script>
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-
-async function extractText(file){
-  const buffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({data:buffer}).promise;
-  let fullText = '';
-  for(let i=1;i<=pdf.numPages;i++){
+async function extractText(file) {
+  const data = new Uint8Array(await file.arrayBuffer());
+  const pdf = await pdfjsLib.getDocument({data}).promise;
+  let tokens = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    const strings = content.items.map(item=>item.str);
-    fullText += strings.join(' ') + '\n';
+    content.items.forEach(item => tokens.push(item.str.trim()));
   }
-  return fullText;
+  return tokens.filter(t => t);
 }
 
-function parseBills(text){
-  const lines = text.split(/\n/);
-  const bills = [];
-  const regex = /(\d{3})\s+.*?(\d+\.00)/g;
-
-  lines.forEach(line=>{
-    let m;
-    while((m = regex.exec(line)) !== null){
-      const flat = m[1];
-      const floor = parseInt(flat[0]);
-      const unit = parseInt(flat.slice(1));
-      if(floor>=1 && floor<=5 && unit>=1 && unit<=14){
-        bills.push({flat, amount: parseFloat(m[2])});
-      }
+function parseBills(tokens) {
+  const bills = {};
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const flat = tokens[i];
+    const amount = tokens[i + 1];
+    if (/^[1-5]0[1-4]$/.test(flat) && /^\d+\.\d{2}$/.test(amount)) {
+      bills[flat] = parseFloat(amount);
     }
-  });
+  }
   return bills;
 }
 
-function parseBank(text){
-  const lines = text.split(/\n/).map(l=>l.trim()).filter(l=>l);
-  const tx = [];
-
-  for(let i=0;i<lines.length;i++){
-    const line = lines[i];
-
-    // Look for lines containing credit amount and balance at end
-    const creditMatch = line.match(/(\d+\.\d{2})\s+(\d{1,3}(,\d{3})*\.\d{2})$/);
-
-    if(creditMatch){
-      const amount = parseFloat(creditMatch[1]);
-
-      // Backtrack to collect description
-      let descParts = [];
-      for(let j=i-1;j>=0 && descParts.length < 4;j--){
-        if(!lines[j].match(/^\d{1,2}\s+[A-Za-z]{3}/)){
-          descParts.unshift(lines[j]);
-        } else {
-          break;
-        }
+function parseBank(tokens) {
+  const txns = [];
+  for (let i = 0; i < tokens.length - 2; i++) {
+    const amt = tokens[i];
+    const bal = tokens[i + 1];
+    if (/^\d{1,3}(,\d{3})*\.\d{2}$/.test(amt) && /^\d{1,3}(,\d{3})*\.\d{2}$/.test(bal)) {
+      const amount = parseFloat(amt.replace(/,/g, ''));
+      let desc = [];
+      let j = i - 1;
+      while (j >= 0 && !/^\d{1,2}$/.test(tokens[j])) {
+        desc.unshift(tokens[j]);
+        j--;
       }
-
-      const description = descParts.join(' ');
-
-      tx.push({amount, desc: description});
+      txns.push({ amount, description: desc.join(' ') });
     }
   }
-
-  return tx;
+  return txns;
 }
 
-function reconcile(bills, bank){
-  const used = new Array(bank.length).fill(false);
-
-  const results = bills.map(b=>{
-    let payment = '-';
-    let status = 'Pending';
-
-    for(let i=0;i<bank.length;i++){
-      if(!used[i] && bank[i].amount === b.amount){
-        used[i] = true;
-        payment = bank[i].amount;
-        status = 'Paid';
-        break;
-      }
-    }
-
-    return {...b, payment, status};
-  });
-
-  const unmatched = bank.filter((_,i)=>!used[i]);
-  return {results, unmatched};
-}
-
-function renderTables(data){
-  const tbody = document.querySelector('#resultTable tbody');
-  tbody.innerHTML = '';
-
-  data.results.forEach((r,i)=>{
-    const tr = document.createElement('tr');
-    tr.className = r.status==='Paid'?'paid':'pending';
-    tr.innerHTML = `<td>${r.flat}</td><td>${r.amount}</td><td>${r.payment}</td><td>${r.status}</td><td><button onclick="overrideRow(${i})">Override</button></td>`;
-    tbody.appendChild(tr);
-  });
-
-  const ut = document.querySelector('#unmatchedTable tbody');
-  ut.innerHTML = '';
-  data.unmatched.forEach(u=>{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${u.amount}</td><td>${u.desc}</td>`;
-    ut.appendChild(tr);
-  });
-
-  window.currentData = data;
-}
-
-function overrideRow(i){
-  const row = window.currentData.results[i];
-  row.status = 'Paid (Manual)';
-  row.payment = row.amount;
-  renderTables(window.currentData);
-}
-
-function sortTable(col){
-  const tbody = document.querySelector('#resultTable tbody');
-  const rows = Array.from(tbody.rows);
-  rows.sort((a,b)=>a.cells[col].innerText.localeCompare(b.cells[col].innerText, undefined, {numeric:true}));
-  tbody.innerHTML = '';
-  rows.forEach(r=>tbody.appendChild(r));
-}
-
-function sortUnmatched(col){
-  const tbody = document.querySelector('#unmatchedTable tbody');
-  const rows = Array.from(tbody.rows);
-  rows.sort((a,b)=>a.cells[col].innerText.localeCompare(b.cells[col].innerText, undefined, {numeric:true}));
-  tbody.innerHTML = '';
-  rows.forEach(r=>tbody.appendChild(r));
-}
-
-async function startReconcile(){
-  try{
-    const billFile = document.getElementById('billPdf').files[0];
-    const bankFile = document.getElementById('bankPdf').files[0];
-
-    if(!billFile || !bankFile){
-      alert('Upload both PDFs');
-      return;
-    }
-
-    const billText = await extractText(billFile);
-    const bankText = await extractText(bankFile);
-
-    const bills = parseBills(billText);
-    const bank = parseBank(bankText);
-
-    const data = reconcile(bills, bank);
-    renderTables(data);
+async function reconcile() {
+  const billsFile = document.getElementById('billsFile').files[0];
+  const bankFile = document.getElementById('bankFile').files[0];
+  if (!billsFile || !bankFile) {
+    alert('Upload both PDFs');
+    return;
   }
-  catch(err){
-    alert('Error: '+err.message);
-    console.error(err);
-  }
+
+  const billTokens = await extractText(billsFile);
+  const bankTokens = await extractText(bankFile);
+
+  const bills = parseBills(billTokens);
+  const txns = parseBank(bankTokens);
+
+  const billBody = document.querySelector('#billTable tbody');
+  const unmatchedBody = document.querySelector('#unmatchedTable tbody');
+  billBody.innerHTML = '';
+  unmatchedBody.innerHTML = '';
+
+  const used = new Set();
+
+  Object.entries(bills).sort().forEach(([flat, amt]) => {
+    let paid = txns.find((t, idx) => !used.has(idx) && t.amount === amt);
+    const row = document.createElement('tr');
+    if (paid) {
+      const idx = txns.indexOf(paid);
+      used.add(idx);
+      row.className = 'paid';
+      row.innerHTML = `<td>${flat}</td><td>${amt}</td><td>${paid.amount}</td><td>Paid</td><td><button onclick="this.closest('tr').className='paid'">Override</button></td>`;
+    } else {
+      row.className = 'unpaid';
+      row.innerHTML = `<td>${flat}</td><td>${amt}</td><td>-</td><td>Unpaid</td><td><button onclick="this.closest('tr').className='paid'">Override</button></td>`;
+    }
+    billBody.appendChild(row);
+  });
+
+  txns.forEach((t, idx) => {
+    if (!used.has(idx)) {
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>-</td><td>${t.amount}</td><td>${t.description}</td>`;
+      unmatchedBody.appendChild(row);
+    }
+  });
 }
 </script></body>
 </html>
