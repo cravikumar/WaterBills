@@ -301,7 +301,7 @@ async function extractTextFromArrayBuffer(ab) {
 }
 
 function extractBills(text) {
-    const regex = /(\d+)\s+(\d{3})\s+[\d\S]+?\s(\d+\.00)/g;
+    const regex = /(\d+)\s+(\d{3})\s+[\d\s]+?(\d+\.00)/g;
     const rows = [];
     let m;
 
