@@ -369,9 +369,9 @@ function render(rows) {
         const note = `${month}-${r.flat}`;
         const amountStr = Number(r.amount).toFixed(2);
 
-        const upiId = "9791440009@upi";
+        const upiId = "gkh37836321839@sbi";
 
-        const upiUrl = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent('GKHeights')}&am=${encodeURIComponent(amountStr)}&cu=INR&tn=${encodeURIComponent(note)}`;
+        const upiUrl = `upi://pay?pa=${encodeURIComponent(upiId)}&am=${encodeURIComponent(amountStr)}&cu=INR&tn=${encodeURIComponent(note)}`;
 
         const baseRow = `
         <td>${r.flat}</td>
